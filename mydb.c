@@ -219,55 +219,56 @@ typedef enum idb_entry_type_e
 	IDB_TYPE_UNKNOWN = '?',
 } idb_entry_type_t;
 
+/* line entry of idb file */
 typedef struct idb_entry_s
 {
    idb_entry_type_t type;
-   mode_t mode;	/* octal permissions mode */
-   char user[IDB_USER_STRING_SIZE];     /* user name - need to find a way to specify numerical uid here*/
-   char group[IDB_GROUP_STRING_SIZE];    /* group name - need to find a way to specify numerical gid here */ 
-   char *fname;       /* complete pathname */
-   char *fname_jump_source /* jump source pathname */
-   uint16_t sum;           /* chksum */
-   size_t size;          /* original size */
-   int matches[MAXMATCH]; /* machine model */
-   int f;             /* mysterious f attribute ... */
-   size_t cmpsize;       /* compressed size */
+   mode_t mode;	                      /* octal permissions mode */
+   char user[IDB_USER_STRING_SIZE];   /* user name - need to find a way to specify numerical uid here*/
+   char group[IDB_GROUP_STRING_SIZE]; /* group name - need to find a way to specify numerical gid here */ 
+   char *fname;                       /* complete pathname */
+   char *fname_jump_source            /* jump source pathname */
+   uint16_t sum;                      /* 16-bit checksum using algorithms of the IRIX version of the sum program */
+   size_t size;                       /* original size */
+   int matches[MAXMATCH];             /* machine model */
+   int f;                             /* mysterious f attribute ... */
+   size_t cmpsize;                    /* compressed size */
 } idb_entry_t;
 
+/* extra info derived from line entries */
 typedef struct idb_entry_info_s
 {
 	int nmatch;
-	char *postop;      /* sh command to perform afler installation of the package */
-	char *exitop;      /* sh command to perform afler installation on exit of inst */
+	char *postop;                /* sh command to perform afler installation of the package */
+	char *exitop;                /* sh command to perform afler installation on exit of inst */
 	char  config[IDB_CONFIG_STRING_SIZE];  /* config mode update, noupdate, suggest */
 	char subgrp[IDB_SUBGROUP_STRING_SIZE];   /* subgroup in subproduct ex: util, tutedge etc...*/
 	off_t offset;        /* offset in subproduct file */
 	char *symval;
-	struct sfile *next;
-	void *sub;
 } idb_entry_info_t;
 
-/* to define a subproduct */
+/* subproduct */
 typedef struct subproduct_s
 {
    char name[IDB_SUBPRODUCT_NAME_STRING_SIZE];    /* the name of the subproduct ex: man sw ... */
-   FILE* file;            /* file handle to the product file */
-   size_t num_entries;        /* the total number of files in that subproduct */
-   off_t current_offset;        /* current calculated offset (while reading .idb file */
+   FILE* file;                   /* file handle to the product file */
+   size_t num_entries;           /* the total number of files in that subproduct */
+   off_t current_offset;         /* current calculated offset (while reading .idb file */
    idb_entry_t *entries;
    idb_entry_info_t *entry_info;
 } subproduct_t;
 
-/* to define a file */
+/* idb file data structure */
 typedef struct idb_file_s
 {
-   idb_entry_t* entries;
+   char              name[IDB_FILE_NAME_STRING_SIZE];
+   size_t            num_entries;
+   size_t*           num_subs;
+   idb_entry_t*      entries;
    idb_entry_info_t* entry_info;
-   size_t num_entries;
-   char name[IDB_FILE_NAME_STRING_SIZE];    /* the name of the product  ex: dev*/
-   size_t num_files;        /* the total number of files in the product */
-   size_t num_subs;          /* number of subproduct associated with that product ex: dev.man dev.sw ... */
-   subproduct_t *subs;          /* pointer to first subproduct */
+   idb_subproduct_t* subs;
+   size_t num_files;
+   size_t num_directories;
 } idb_file_t;
 
 
@@ -277,51 +278,52 @@ typedef struct idb_file_s
    allocate new subproduct struct
 **/
 static char distd[MAXPATH];
-static subproduct_t *creat_sub(char *name)
+static bool idb_subproduct_t *create_sub(const char *name)
 {
-subproduct_t *sub;
-char dir[MAXPATH];
+	idb_subproduct_t *sub;
+	char dir[MAXPATH];
 
-   if(!(sub=(SUB*)malloc(sizeof(SUB)))) return 0;
-   sub->nfiles=0;
-   sub->next=0;
-   strcpy(sub->name, name);
-   /* open the corresponding file */
-   sprintf(dir, "%s/%s", distd, name);
-   if((sub->fh=open(dir, O_RDONLY))<=0) return 0;
-   sub->curoff=IDB_HEADER_LEN;
-   return sub;
+	if(!(sub=(idb_subproduct_t*)calloc(1, sizeof(subproduct_t)))) return false;
+	sub->nfiles=0;
+	sub->next=0;
+	strcpy(sub->name, name);
+	/* open the corresponding file */
+	sprintf(dir, "%s/%s", distd, name);
+	if((sub->file=fopen(dir, "rb")) == NULL) return false;
+	sub->current_offset=IDB_HEADER_LEN;
+	return sub;
 }
 
 /**
    get a pointer to the specified subproduct in the idb.
 **/
-static SUB *getsub(IDB *idb, char *name)
+static idb_subproduct_t* getsub(idb_file_t *idb, const char *name)
 {
-SUB *sub;
-char *pt, sname[100];
+	idb_subproduct_t* sub;
+	char *pt;
+	char sname[IDB_FILE_NAME_STRING_SIZE];
 
-   /* extract the subproduct from the subgroup */
-   for(pt=name; *pt&&*pt!='.'; pt++);
-   if(!*pt++) return 0;
-   for(; *pt&&*pt!='.'; pt++);
-   if(!*pt) return 0;
-   strncpy(sname, name, pt-name);
-   sname[pt-name]='\0';
+	/* extract the subproduct from the subgroup */
+	for(pt=name; *pt&&*pt!='.'; pt++);
+	if(!*pt++) return 0;
+	for(; *pt&&*pt!='.'; pt++);
+	if(!*pt) return 0;
+	strncpy(sname, name, pt-name);
+	sname[pt-name]='\0';
 
-   if(!idb->nsub) { idb->nsub=1; return idb->sub=creat_sub(sname); }
-   else
-   {
+	if(!idb->nsub) { idb->nsub=1; return idb->sub=creat_sub(sname); }
+	else
+	{
 
-      for(sub=idb->sub; sub; sub=sub->next)
-         if(!strcmp(sub->name, sname))
-            return sub;
-   }
-   sub=idb->sub;
-   idb->sub=creat_sub(sname);
-   idb->sub->next=sub;
-   idb->nsub++;
-   return idb->sub;
+		for(sub=idb->sub; sub; sub=sub->next)
+			if(!strcmp(sub->name, sname))
+				return sub;
+	}
+	sub=idb->sub;
+	idb->sub=creat_sub(sname);
+	idb->sub->next=sub;
+	idb->nsub++;
+	return idb->sub;
 }
 
 /**
@@ -333,6 +335,7 @@ static int getlut(LUTENT *lut, char *val)
    fprintf(stderr, "Bad value specified (%s)\n", val);
    exit(1);
 }
+
 /**
    Get a string out of a lut
 **/
@@ -342,6 +345,7 @@ static const char* getstr(LUTENT *lut, int val)
    fprintf(stderr, "Bad value specified (%d)\n", val);
    exit(1);
 }
+
 /**
    Get an index for that variable.
 **/
@@ -514,6 +518,7 @@ char *var;
 }
    return 1;
 }
+
 /**
    This function will read in the content of a IDB file and set
    a database according to the parsed information.
@@ -606,6 +611,47 @@ int counter, len;
 			}
 			break;
 		case IDB_TYPE_DIRECTORY:
+			if(fscanf(file, "%o %s %s %s %s %s mach(GFXBOARD=%s)\n") != 7); 
+			{
+				fprintf(stderr, "Can't read idb line entry of type directory (%s) : %s\n", fname, strerror(errno));
+				fclose(file);
+				exit(EXIT_FAILURE);
+			}
+			break;
+		case IDB_TYPE_SYMLINK:
+			if(fscanf(file, "%o %s %s %s %s %s mach(GFXBOARD=%s)\n") != 7); 
+			{
+				fprintf(stderr, "Can't read idb line entry of type directory (%s) : %s\n", fname, strerror(errno));
+				fclose(file);
+				exit(EXIT_FAILURE);
+			}
+			break;
+		case IDB_TYPE_BLOCK_SPECIAL:
+			if(fscanf(file, "%o %s %s %s %s %s mach(GFXBOARD=%s)\n") != 7); 
+			{
+				fprintf(stderr, "Can't read idb line entry of type directory (%s) : %s\n", fname, strerror(errno));
+				fclose(file);
+				exit(EXIT_FAILURE);
+			}
+			break;
+
+		case IDB_TYPE_CHARACTER_SPECIAL:
+			if(fscanf(file, "%o %s %s %s %s %s mach(GFXBOARD=%s)\n") != 7); 
+			{
+				fprintf(stderr, "Can't read idb line entry of type directory (%s) : %s\n", fname, strerror(errno));
+				fclose(file);
+				exit(EXIT_FAILURE);
+			}
+			break;
+		case IDB_TYPE_FIFO:
+			if(fscanf(file, "%o %s %s %s %s %s mach(GFXBOARD=%s)\n") != 7); 
+			{
+				fprintf(stderr, "Can't read idb line entry of type directory (%s) : %s\n", fname, strerror(errno));
+				fclose(file);
+				exit(EXIT_FAILURE);
+			}
+			break;
+		case IDB_TYPE_UNKNOWN:
 			if(fscanf(file, "%o %s %s %s %s %s mach(GFXBOARD=%s)\n") != 7); 
 			{
 				fprintf(stderr, "Can't read idb line entry of type directory (%s) : %s\n", fname, strerror(errno));

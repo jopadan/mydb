@@ -6,4 +6,4 @@ idb/sw archiver adapted to POSIX arch based on original SGI IRIX source from Luc
 - [showfiles](https://nixdoc.net/man-pages/IRIX/man1/showfiles.1.html)
 - [gendist](https://nixdoc.net/man-pages/IRIX/man1/gendist.1.html)
 - [specfile](https://github.com/frankeverdij/specfile)
-- [swextract](http://github.com/misuchiru03/swextract)
+- [swextract]asda(http://github.com/misuchiru03/swextract)

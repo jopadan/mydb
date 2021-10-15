@@ -201,57 +201,85 @@ static LUTENT arch_lut[]={
 NULL,
 };
 
-/* to define a file */
-typedef struct sfile
+#define IDB_FILE_NAME_STRING_SIZE 100
+#define IDB_SUBPRODUCT_NAME_STRING_SIZE 100
+#define IDB_USER_STRING_SIZE 30
+#define IDB_GROUP_STRING_SIZE 30
+#define IDB_CONFIG_STRING_SIZE 20
+#define IDB_SUBGROUP_STRING_SIZE 30
+
+typedef enum idb_entry_type_e
 {
-   char *fname;
-   char type;
-   int mode;
-   char user[30];
-   char group[30];
-   char subgrp[30];   /* subgroup in subproduct ex: util, tutedge etc...*/
-   int cmpsize;       /* compressed size */
-   char *postop;      /* sh command to perform afler installation of the package */
-   char *exitop;      /* sh command to perform afler installation on exit of inst */
-   char  config[20];  /* config mode update, noupdate, suggest */
-   int size;          /* original size */
-   int sum;           /* chksum */
+	IDB_TYPE_FILE = 'f',
+	IDB_TYPE_DIRECTORY = 'd',
+	IDB_TYPE_SYMLINK = 's',
+	IDB_TYPE_BLOCK_SPECIAL = 'b',
+	IDB_TYPE_CHARACTER_SPECIAL = 'c',
+	IDB_TYPE_FIFO = 'F',
+	IDB_TYPE_UNKNOWN = '?',
+} idb_entry_type_t;
+
+typedef struct idb_entry_s
+{
+   idb_entry_type_t type;
+   mode_t mode;	/* octal permissions mode */
+   char user[IDB_USER_STRING_SIZE];     /* user name - need to find a way to specify numerical uid here*/
+   char group[IDB_GROUP_STRING_SIZE];    /* group name - need to find a way to specify numerical gid here */ 
+   char *fname;       /* complete pathname */
+   char *fname_jump_source /* jump source pathname */
+   uint16_t sum;           /* chksum */
+   size_t size;          /* original size */
+   int matches[MAXMATCH]; /* machine model */
    int f;             /* mysterious f attribute ... */
-   int offset;        /* offset in subproduct file */
-   char *symval;
-   int nmatch;
-   int matches[MAXMATCH];
-   struct sfile *next;
-   void *sub;
-} SFILE;
-#define TOSUB(pt) ((SUB*)pt->sub)
+   size_t cmpsize;       /* compressed size */
+} idb_entry_t;
+
+typedef struct idb_entry_info_s
+{
+	int nmatch;
+	char *postop;      /* sh command to perform afler installation of the package */
+	char *exitop;      /* sh command to perform afler installation on exit of inst */
+	char  config[IDB_CONFIG_STRING_SIZE];  /* config mode update, noupdate, suggest */
+	char subgrp[IDB_SUBGROUP_STRING_SIZE];   /* subgroup in subproduct ex: util, tutedge etc...*/
+	off_t offset;        /* offset in subproduct file */
+	char *symval;
+	struct sfile *next;
+	void *sub;
+} idb_entry_info_t;
 
 /* to define a subproduct */
-typedef struct sub
+typedef struct subproduct_s
 {
-   char name[100];    /* the name of the subproduct ex: man sw ... */
-   int fh;            /* file handle to the product file */
-   int nfiles;        /* the total number of files in that subproduct */
-   int curoff;        /* current calculated offset (while reading .idb file */
-   SFILE *files;
-   struct sub *next;
-} SUB;
-/** to define a .idb file */
-typedef struct idb
+   char name[IDB_SUBPRODUCT_NAME_STRING_SIZE];    /* the name of the subproduct ex: man sw ... */
+   FILE* file;            /* file handle to the product file */
+   size_t num_entries;        /* the total number of files in that subproduct */
+   off_t current_offset;        /* current calculated offset (while reading .idb file */
+   idb_entry_t *entries;
+   idb_entry_info_t *entry_info;
+} subproduct_t;
+
+/* to define a file */
+typedef struct idb_file_s
 {
-   char name[100];    /* the name of the product  ex: dev*/
-   int nfiles;        /* the total number of files in the product */
-   int nsub;          /* number of subproduct associated with that product ex: dev.man dev.sw ... */
-   SUB *sub;          /* pointer to first subproduct */
-} IDB;
+   idb_entry_t* entries;
+   idb_entry_info_t* entry_info;
+   size_t num_entries;
+   char name[IDB_FILE_NAME_STRING_SIZE];    /* the name of the product  ex: dev*/
+   size_t num_files;        /* the total number of files in the product */
+   size_t num_subs;          /* number of subproduct associated with that product ex: dev.man dev.sw ... */
+   subproduct_t *subs;          /* pointer to first subproduct */
+} idb_file_t;
+
+
+#define TOSUB(pt) ((SUB*)pt->sub)
 
 /**
    allocate new subproduct struct
 **/
 static char distd[MAXPATH];
-static SUB *creat_sub(char *name)
+static subproduct_t *creat_sub(char *name)
 {
-SUB *sub;
+subproduct_t *sub;
 char dir[MAXPATH];
 
    if(!(sub=(SUB*)malloc(sizeof(SUB)))) return 0;
@@ -264,6 +292,7 @@ char dir[MAXPATH];
    sub->curoff=IDB_HEADER_LEN;
    return sub;
 }
+
 /**
    get a pointer to the specified subproduct in the idb.
 **/
@@ -294,6 +323,7 @@ char *pt, sname[100];
    idb->nsub++;
    return idb->sub;
 }
+
 /**
    Get a value out of a lut
 **/
@@ -332,18 +362,21 @@ static int getval(char *type, char *val)
       exit(1);
    }
 }
-static char unparse(SFILE *sfile)
+static char unparse(IDB_FILE *sfile)
 {
 int i, val;
 
-   for(i=0;i<sfile->nmatch;i++)
+   for(size_t n = 0; n < sfile->num_entries; n++)
    {
-      printf("   ");
-      if((val=get_cpuarch(sfile->matches[i]))) printf("CPUARCH=%s ", getstr(arch_lut, val));
-      if((val=get_cpuboard(sfile->matches[i]))) printf("CPUBOARD=%s ", getstr(arch_lut, val));
-      if((val=get_gfxboard(sfile->matches[i]))) printf("GFXBOARD=%s ", getstr(gr_lut, val));
-      if((val=get_subgr(sfile->matches[i]))) printf("SUBGR=%s ", getstr(sg_lut, val));
-      printf("\n");
+	   for(i=0;i<sfile->nmatch;i++)
+	   {
+		   printf("   ");
+		   if((val=get_cpuarch(sfile->entries[n]->matches[i]))) printf("CPUARCH=%s ", getstr(arch_lut, val));
+		   if((val=get_cpuboard(sfile->entries[n]->matches[i]))) printf("CPUBOARD=%s ", getstr(arch_lut, val));
+		   if((val=get_gfxboard(sfile->entries[n]->matches[i]))) printf("GFXBOARD=%s ", getstr(gr_lut, val));
+		   if((val=get_subgr(sfile->entries[n]->matches[i]))) printf("SUBGR=%s ", getstr(sg_lut, val));
+		   printf("\n");
+	   }
    }
 }
 
@@ -389,11 +422,13 @@ static void finval(char *atr)
 static int getint(char *val) { int v; if(!val || sscanf(val, "%d", &v) != 1) {
       fprintf(stderr, "Invalide Integer value (%s)\n", val); exit(1); } return v; }
 
-static int parse(char *atr, char *subgrp, SFILE *sfile)
+static int parse(char *atr, char *subgrp, IDB_FILE *sfile)
 {
 char *var;
 
-   strncpy(sfile->subgrp, subgrp, sizeof(sfile->subgrp));
+   for(size_t n = 0; n < sfile->num_entries; n++)
+   {
+   strncpy(sfile->other[n]->subgrp, subgrp, sizeof(sfile->other[n]->subgrp));
    if(!(var=strtok(atr, " \t(\n"))) finval(atr);
    do
    {
@@ -475,7 +510,9 @@ char *var;
          fprintf(stderr, "\nWarning : untreated atribute %s file %s\n", var, sfile->fname);
          while((pt=strtok(NULL, ")")) && pt[strlen(pt)-1]==':');
       }
-   } while(var=strtok(NULL, " \t(\n")); return 1;
+   } while(var=strtok(NULL, " \t(\n")); 
+}
+   return 1;
 }
 /**
    This function will read in the content of a IDB file and set
@@ -508,27 +545,20 @@ int counter, len;
    idb->nsub=0;
 
    printf("Reading %s...\n", fname);
-
-   while(fgets(line, sizeof(line), file))
+   const char IDB_TYPE_FILE = 'f';
+   const char IDB_TYPE_DIRECTORY = 'd';
+   char ch;
+   int reval = 0;
+   while(retval = fread(&ch, 1, sizeof(char), file) == 1)
    {
-   SFILE *sfile;
-   SUB *sub;
-   char *field;
+   	SFILE *sfile = calloc(1, sizeof(SFILE));
+	SUB *sub;
+	char* field;
+	sfile->nmatch=0;
+	sfile->postop=sfile->extitop=0;
+	sfile->config[0]='\0';
+	sfile->type = ch;
 
-      if(!((counter++)%100)) {printf("\r%zd%%", ftell(file)*100/len); fflush(stdout);}
-
-      /* allocate memory */
-      if(!(sfile=(SFILE*)malloc(sizeof(SFILE)))) return 0;
-      sfile->nmatch=0;
-      sfile->postop=sfile->exitop=0;
-      sfile->config[0]='\0';
-
-      /* parse the line */
-      /* fixed fields ... */
-      /* type */
-      field=strtok(line, " \t\n");
-      if(!field) return 0;
-      sfile->type=field[0];
       /* mode */
       field=strtok(NULL, " \t\n");
       if(!field) return 0;
@@ -565,6 +595,35 @@ int counter, len;
       sfile->sub=(void*)sub;
       /* parse the atributes */
       if(sfile->type != 'd' && !parse(&field[strlen(field)+1], field, sfile)) return 0;
+	switch(sfile->type)
+	{
+		case IDB_TYPE_FILE:
+			if(fscanf(file, "%o %s %s %s %s %s sum(%zu) size(%zu) mach(GFXBOARD=%s) f(%zu) cmpsize(%zu)\n", &sfile->mode, sfile->user, sfile->group, sfile->fname, sfile->j) != 11);
+			{
+				fprintf(stderr, "Can't read idb line entry of type file (%s) : %s\n", fname, strerror(errno));
+				fclose(file);
+				exit(EXIT_FAILURE);
+			}
+			break;
+		case IDB_TYPE_DIRECTORY:
+			if(fscanf(file, "%o %s %s %s %s %s mach(GFXBOARD=%s)\n") != 7); 
+			{
+				fprintf(stderr, "Can't read idb line entry of type directory (%s) : %s\n", fname, strerror(errno));
+				fclose(file);
+				exit(EXIT_FAILURE);
+			}
+			break;
+		default:
+			break;
+	}
+   }
+{
+      fprintf(stderr, "Can't read idb line entry type (%s) : %s\n", fname, strerror(errno));
+      fclose(file);
+      exit(EXIT_FAILURE);
+   }
+      if(!((counter++)%100)) {printf("\r%zd%%", ftell(file)*100/len); fflush(stdout);}
+
    }
    printf("\r%zd%%\n", ftell(file)*100/len);
    fflush(stdout);
